@@ -1,188 +1,208 @@
-# Prueba Técnica DevOps Senior - FLBetances
+# Prueba Técnica DevOps Senior — FLBetances
 
-End-to-end DevOps solution covering CI/CD, static code analysis, containerization, orchestration and Infrastructure-as-Code style manifests for a containerized ASP.NET Core 8 + SQL Server application.
+**Autor:** Robert Pérez
 
-## Author
-Robert Perez
+Solución end-to-end para una aplicación ASP.NET Core 8 + SQL Server: contenedor, análisis estático con SonarQube, pipeline CI/CD con dos escenarios (éxito y fallo), publicación de imagen en Docker Hub y despliegue en Kubernetes con manifiestos Kustomize.
+
+---
 
 ## Stack
 
-| Layer | Technology |
+| Capa | Tecnología |
 |---|---|
-| Application | ASP.NET Core 8 (modernized from official Docker sample `aspnet-mssql`) |
-| Database | Azure SQL Edge (MS-SQL compatible) |
-| Source control | GitHub (`robertnperez28/OpsAndDev`) |
-| CI/CD | Azure DevOps Pipelines (Self-Hosted Agent) |
-| Code quality | SonarQube Community 26.x |
-| Container registry | Docker Hub (`robertnperez/aspnetapp-flbetances`) |
-| Orchestration | Kubernetes (Minikube) |
-| Templating | Kustomize (overlay-based) |
+| Aplicación | ASP.NET Core 8 |
+| Base de datos | Azure SQL Edge (compatible MS-SQL) |
+| Repositorio | GitHub — `robertnperez28/OpsAndDev` |
+| CI/CD | Azure DevOps Pipelines (agente self-hosted Windows) |
+| Calidad de código | SonarQube Community |
+| Registro de imágenes | Docker Hub — `robertnperez/aspnetapp-flbetances` |
+| Orquestación | Kubernetes (Minikube) |
+| Templating | Kustomize |
 | Ingress | NGINX Ingress Controller |
 
-## Repository structure
+---
+
+## Estructura del repositorio
 
 ```
 FLBetances/
-├── azure-pipelines.yml             # Main pipeline (success scenario)
-├── azure-pipelines-failed.yml      # Failure scenario (Quality Gate blocks)
-├── sonar-project.properties        # SonarQube config (CLI fallback)
-├── .editorconfig                   # Coding standards
+├── azure-pipelines.yml             # Pipeline escenario éxito
+├── azure-pipelines-failed.yml      # Pipeline escenario fallo
+├── sonar-project.properties        # Configuración del scanner
+├── .editorconfig
 ├── .gitignore
 ├── README.md
-├── src/                            # Production app (ASP.NET Core 8)
-│   ├── compose.yaml                # Local dev stack (web + db)
+├── src/                            # Aplicación de producción
+│   ├── compose.yaml                # Stack para desarrollo local
 │   └── app/aspnetapp/
-│       ├── Dockerfile              # Multi-stage, non-root user
-│       ├── aspnetapp.csproj
-│       ├── Program.cs
-│       ├── Startup.cs
+│       ├── Dockerfile              # Multi-stage, usuario no-root
 │       └── ...
-├── src-bad/                        # Intentionally bad code (failure scenario)
-│   └── aspnetapp/
-│       ├── BadCode.cs              # SQL injection, hardcoded secrets, etc.
-│       └── ...
-├── environment/                    # Kubernetes manifests
-│   ├── base/
-│   │   ├── kustomization.yaml
-│   │   ├── namespace.yaml
-│   │   ├── mssql-secret.yaml
-│   │   ├── mssql-pvc.yaml
-│   │   ├── mssql-statefulset.yaml
-│   │   ├── web-deployment.yaml
-│   │   └── ingress.yaml
-│   └── overlays/
-│       └── dev/
-│           └── kustomization.yaml
+├── src-bad/                        # Código con issues (escenario fallo)
+│   └── aspnetapp/BadCode.cs
+├── environment/                    # Manifiestos Kubernetes
+│   ├── base/                       # Recursos comunes
+│   └── overlays/dev/               # Overlay del entorno dev
 ├── scripts/
-│   ├── hello-world.sh              # Used by parallel job
-│   └── create-files.sh             # Generates 10 files with date
+│   ├── hello-world.ps1             # Job paralelo (10x)
+│   └── create-files.ps1            # Genera 10 archivos con fecha
 └── docs/
-    └── screenshots/                # Evidence captures
+    ├── screenshots/                # Capturas de evidencia
+    └── logs/                       # Logs de pipelines descargados
 ```
 
-## Architecture
+---
+
+## Arquitectura
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                      GitHub repo (push)                     │
+│                      GitHub (push)                          │
 └──────────────────────────────┬──────────────────────────────┘
                                │ webhook
 ┌──────────────────────────────▼──────────────────────────────┐
-│              Azure DevOps Pipeline (Self-Hosted)            │
+│         Azure DevOps Pipeline (agente self-hosted)          │
 │                                                              │
 │  Stage 1: SonarQubeAnalysis                                  │
-│   ├─ dotnet restore + build                                  │
-│   ├─ SonarQubePrepare (scanner for MSBuild)                  │
-│   ├─ SonarQubeAnalyze                                        │
-│   └─ SonarQubePublish (Quality Gate WAIT)                    │
+│   ├─ dotnet sonarscanner begin                               │
+│   ├─ dotnet build (interceptado por el scanner)              │
+│   └─ dotnet sonarscanner end (espera Quality Gate)           │
 │                                                              │
-│  Stage 2: DockerBuildPush (only if gate PASS)                │
-│   ├─ docker build (multi-stage, non-root)                    │
+│  Stage 2: DockerBuildPush  (solo si el gate pasó)            │
+│   ├─ docker build (multi-stage, no-root)                     │
 │   └─ docker push → Docker Hub                                │
 │                                                              │
 │  Stage 3: ParallelJobs                                       │
-│   ├─ Job A: 10 parallel "Hola Mundo" jobs                    │
-│   └─ Job B: Generate 10 dated files + cat                    │
+│   ├─ Job A: 10 jobs en paralelo "Hola Mundo"                 │
+│   └─ Job B: genera 10 archivos con fecha y los imprime       │
 │                                                              │
 │  Stage 4: DeployK8s                                          │
-│   ├─ Update image tag in kustomization.yaml                  │
+│   ├─ Actualiza imageTag en kustomization.yaml                │
 │   ├─ kubectl apply -k environment/overlays/dev               │
 │   └─ Smoke test                                              │
 └─────────────────────────────────────────────────────────────┘
                                │
 ┌──────────────────────────────▼──────────────────────────────┐
-│                       Minikube cluster                       │
+│                       Cluster Minikube                       │
 │  Namespace: aspnetapp-dev                                    │
 │   ├─ StatefulSet: dev-mssql (PVC 2Gi)                        │
-│   ├─ Deployment: dev-aspnetapp-web (1 replica)               │
+│   ├─ Deployment: dev-aspnetapp-web                           │
 │   ├─ Service:    dev-aspnetapp-web (ClusterIP :80→8080)      │
 │   └─ Ingress:    dev-aspnetapp-ingress → aspnetapp.local     │
 └─────────────────────────────────────────────────────────────┘
 ```
 
-## Pipeline scenarios
+---
 
-### Success scenario (`azure-pipelines.yml`)
-1. Code is analyzed by SonarQube → **Quality Gate passes**
-2. Docker image is built & pushed to Docker Hub
-3. Parallel jobs run (10x Hello World + 10 files generation)
-4. App is deployed to Minikube via Kustomize
+## Los dos escenarios del pipeline
 
-### Failure scenario (`azure-pipelines-failed.yml`)
-1. Targets `src-bad/` folder containing intentional issues:
-   - Hardcoded credentials (security hotspot)
-   - SQL injection vulnerability
-   - Empty catch blocks
-   - Dead code, magic numbers, duplicated blocks
-2. SonarQube Quality Gate **fails**
-3. The pipeline stops at Stage 1 → Docker/K8s stages never execute
+### Escenario 1 — Éxito (`azure-pipelines.yml`)
 
-## Local development
+Se analiza el código de `src/app/`. El Quality Gate de SonarQube pasa, y a partir de ahí el pipeline:
+
+1. Construye y publica la imagen en Docker Hub.
+2. Ejecuta los jobs paralelos (10 "Hola Mundo" + generación de 10 archivos con fecha).
+3. Aplica los manifiestos a Minikube y corre el smoke test.
+
+### Escenario 2 — Fallo (`azure-pipelines-failed.yml`)
+
+Se analiza la carpeta `src-bad/` que contiene issues a propósito (credenciales hardcoded, SQL injection, código duplicado, etc.). El Quality Gate falla y los stages siguientes quedan en estado *skipped*, demostrando que el gate bloquea el resto del pipeline.
+
+---
+
+## Cómo se cumple cada requisito
+
+| # | Requisito | Dónde está |
+|---|---|---|
+| 1 | App contenerizada (.NET + MSSQL) | `src/app/aspnetapp/Dockerfile`, `src/compose.yaml` |
+| 2 | Código en GitHub público | https://github.com/robertnperez28/OpsAndDev |
+| 3 | Pipeline en Azure DevOps | `azure-pipelines.yml` + `azure-pipelines-failed.yml` |
+| 4 | Integración con SonarQube | Stage 1 del pipeline |
+| 5 | Quality Gate enforcing | `sonar.qualitygate.wait=true` |
+| 6 | Compila después de pasar Sonar | Stage 2 con `dependsOn: SonarQubeAnalysis` y `condition: succeeded()` |
+| 7.a | Imprimir Hola Mundo 10 veces en paralelo | Stage 3 → job `HelloWorldParallel` con `strategy: parallel: 10` |
+| 7.b | Script que crea 10 archivos con fecha y los imprime | Stage 3 → job `GenerateFiles` ejecutando `scripts/create-files.ps1` |
+| 8 | Dos escenarios (éxito + fallo) | Dos pipelines separados |
+| 9 | Imagen publicada en registro público | Docker Hub: `robertnperez/aspnetapp-flbetances` |
+| 10 | Versionado de imagen | Tag `vMAJOR.MINOR.<BuildId>` + `latest` |
+| 11 | Deploy a Kubernetes | Stage 4 + `environment/overlays/dev/` |
+| 12 | App accesible vía Ingress | `environment/base/ingress.yaml` → `http://aspnetapp.local` |
+
+---
+
+## URLs de referencia
+
+| Recurso | URL |
+|---|---|
+| Repo GitHub | https://github.com/robertnperez28/OpsAndDev |
+| Carpeta del proyecto | https://github.com/robertnperez28/OpsAndDev/tree/main/FLBetances |
+| Pipeline éxito (YAML) | https://github.com/robertnperez28/OpsAndDev/blob/main/FLBetances/azure-pipelines.yml |
+| Pipeline fallo (YAML) | https://github.com/robertnperez28/OpsAndDev/blob/main/FLBetances/azure-pipelines-failed.yml |
+| Imagen en Docker Hub | https://hub.docker.com/r/robertnperez/aspnetapp-flbetances |
+| Tags de la imagen | https://hub.docker.com/r/robertnperez/aspnetapp-flbetances/tags |
+| SonarQube proyecto OK (local) | http://localhost:9000/dashboard?id=Prueba-Dummy-FLBetances |
+| SonarQube proyecto FAILED (local) | http://localhost:9000/dashboard?id=Prueba-Dummy-FLBetances-FAILED |
+| Organización Azure DevOps | https://dev.azure.com/OpsAndDev |
+| Proyecto Azure DevOps | https://dev.azure.com/OpsAndDev/FLBetancesDevOps |
+| Endpoint local de la app | http://aspnetapp.local |
+
+---
+
+## Evidencias
+
+- **Capturas:** `docs/screenshots/`
+- **Logs descargados de pipelines:** `docs/logs/`
+
+---
+
+## Desarrollo local
 
 ```bash
-# Run app + db locally
 cd FLBetances/src
 docker compose up -d --build
-# Open http://localhost:8080
+# http://localhost:8080
 docker compose down
 ```
 
-## Deploy to Minikube manually
+---
+
+## Despliegue manual a Minikube
 
 ```powershell
-# 1. Build & push
+# 1. Build y push de la imagen
 cd FLBetances/src/app/aspnetapp
 docker build -t robertnperez/aspnetapp-flbetances:latest .
 docker push robertnperez/aspnetapp-flbetances:latest
 
-# 2. Apply manifests
+# 2. Aplicar manifiestos
 kubectl apply -k FLBetances/environment/overlays/dev
 
-# 3. Wait for rollout
+# 3. Esperar el rollout
 kubectl rollout status deployment/dev-aspnetapp-web -n aspnetapp-dev
 
-# 4. Expose ingress (in a separate terminal, keep running)
+# 4. Exponer el ingress (terminal aparte, se queda corriendo)
 minikube tunnel
 
-# 5. Add hosts entry (run as Administrator)
+# 5. Agregar entrada en hosts (como Administrador, una sola vez)
 Add-Content "C:\Windows\System32\drivers\etc\hosts" "127.0.0.1 aspnetapp.local"
 
-# 6. Browse
+# 6. Abrir
 start http://aspnetapp.local
 ```
 
+---
+
 ## SonarQube
 
-- URL: `http://localhost:9000`
-- Project key: `Prueba-Dummy-FLBetances` (success), `Prueba-Dummy-FLBetances-FAILED` (fail)
-- Quality Gate: default Sonar way (waits via `sonar.qualitygate.wait=true`)
+- URL local: `http://localhost:9000`
+- Proyectos:
+  - `Prueba-Dummy-FLBetances` → código sano, Quality Gate pasa.
+  - `Prueba-Dummy-FLBetances-FAILED` → código con issues, Quality Gate falla.
 
-## Cleanup
+---
+
+## Limpieza
 
 ```powershell
-# Remove app from cluster
 kubectl delete -k FLBetances/environment/overlays/dev
-
-# Stop minikube
 minikube stop
-
-# Stop SonarQube
-cd C:\OpsAndDev\sonarqube
-docker compose down
 ```
-
-## Bonus features implemented
-- ✅ Kustomize as template manager
-- ✅ Multi-stage Dockerfile with non-root user
-- ✅ Health probes (readiness + liveness)
-- ✅ Resource requests/limits
-- ✅ StatefulSet + PVC for stateful database
-- ✅ Secret for DB credentials (no hardcoded passwords in manifests)
-- ✅ Ingress with NGINX controller
-- ✅ Self-hosted agent
-- ✅ Two pipeline scenarios (success/failure)
-- ✅ Coding standards (`.editorconfig`)
-
-## Bonus NOT implemented (and why)
-- ❌ Public cloud deployment: limited to local Minikube due to no Azure/AWS credit available. The Kustomize manifests are cloud-portable: switching to AKS/EKS only requires `kubectl config use-context <new-cluster>`.
-- ❌ Terraform IaC: documented design but not provisioned (no cloud).

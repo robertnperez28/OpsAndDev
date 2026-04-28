@@ -33,3 +33,8 @@ Thumbs.db
 *.secret
 .env
 .env.local
+
+# Allow evidence pipeline logs (override default Logs/ rule)
+!docs/logs/
+!docs/logs/**
+
