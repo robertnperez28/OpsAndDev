@@ -1,0 +1,35 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: aspnetapp-dev
+
+resources:
+  - ../../base
+
+namePrefix: dev-
+
+# 'labels' replaces deprecated 'commonLabels'
+labels:
+  - includeSelectors: true
+    pairs:
+      environment: dev
+
+# Override image tag from CI/CD pipeline (updated dynamically by pipeline)
+images:
+  - name: robertnperez/aspnetapp-flbetances
+    newTag: v1.0.0
+
+# Reduce replicas for dev
+replicas:
+  - name: aspnetapp-web
+    count: 1
+
+# Patch DB_HOST to match the prefixed StatefulSet service name (dev-mssql)
+patches:
+  - target:
+      kind: Deployment
+      name: aspnetapp-web
+    patch: |-
+      - op: replace
+        path: /spec/template/spec/containers/0/env/2/value
+        value: dev-mssql

@@ -1,0 +1,80 @@
+# =====================================================================
+# Azure DevOps Pipeline - FAILURE scenario
+# Project: Prueba-Dummy DevOps Senior - FLBetances
+#
+# Purpose: Demonstrate SonarQube blocking the pipeline when code
+#          contains intentional bugs, code smells or security issues.
+#
+# How it triggers a failure:
+#   - Uses a separate folder (FLBetances/src-bad/) with intentional issues
+#   - The Quality Gate is configured with sonar.qualitygate.wait=true
+#   - When the gate fails, the entire stage fails and Docker/K8s never run
+# =====================================================================
+
+trigger: none   # Manual trigger only (avoid running on every push)
+
+pool:
+  name: SelfHostedPool
+
+variables:
+  sonarServiceConnection: 'SonarQube-Local'
+  sonarProjectKey: 'prueba-dummy-flbetances-failed'
+  sonarProjectName: 'Prueba-Dummy-FLBetances-FAILED'
+  buildConfiguration: 'Release'
+  badProjectPath: 'FLBetances/src-bad/aspnetapp/aspnetapp.csproj'
+
+stages:
+- stage: SonarQubeAnalysisFails
+  displayName: 'SonarQube Analysis (expected to FAIL)'
+  jobs:
+    - job: AnalyzeBadCode
+      displayName: 'Analyze code with intentional issues'
+      steps:
+        - task: UseDotNet@2
+          displayName: 'Install .NET 8 SDK'
+          inputs:
+            packageType: 'sdk'
+            version: '8.0.x'
+
+        - task: SonarQubePrepare@7
+          displayName: 'Prepare SonarQube analysis (strict gate)'
+          inputs:
+            SonarQube: '$(sonarServiceConnection)'
+            scannerMode: 'dotnet'
+            projectKey: '$(sonarProjectKey)'
+            projectName: '$(sonarProjectName)'
+            extraProperties: |
+              sonar.exclusions=**/wwwroot/lib/**,**/bin/**,**/obj/**
+              sonar.qualitygate.wait=true
+
+        - task: DotNetCoreCLI@2
+          displayName: 'Restore'
+          inputs:
+            command: 'restore'
+            projects: '$(badProjectPath)'
+
+        - task: DotNetCoreCLI@2
+          displayName: 'Build (with bad code)'
+          inputs:
+            command: 'build'
+            projects: '$(badProjectPath)'
+            arguments: '--configuration $(buildConfiguration) --no-restore'
+
+        - task: SonarQubeAnalyze@7
+          displayName: 'Run SonarQube analysis'
+
+        - task: SonarQubePublish@7
+          displayName: 'Wait for Quality Gate (expected to FAIL)'
+          inputs:
+            pollingTimeoutSec: '300'
+
+# These stages will NEVER run because the Quality Gate above fails.
+# This proves the gate effectively blocks the pipeline.
+- stage: ShouldNeverRun
+  displayName: 'This stage should be skipped'
+  dependsOn: SonarQubeAnalysisFails
+  condition: succeeded()
+  jobs:
+    - job: NeverExecutes
+      steps:
+        - bash: echo "If you see this, the gate did not block correctly."

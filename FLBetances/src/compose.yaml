@@ -1,0 +1,23 @@
+services:
+  web:
+    build: app/aspnetapp
+    ports:
+      - "8080:8080"
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+
+  db:
+    image: mcr.microsoft.com/azure-sql-edge:1.0.4
+    environment:
+      ACCEPT_EULA: "Y"
+      MSSQL_SA_PASSWORD: "R0b3rt2026!"
+    restart: always
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/mssql-tools/bin/sqlcmd -S localhost -U sa -P R0b3rt2026! -Q 'SELECT 1' || exit 1"]
+      interval: 10s
+      retries: 10
+      start_period: 20s
+      timeout: 5s

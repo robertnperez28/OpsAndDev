@@ -1,0 +1,35 @@
+# Build outputs
+**/bin/
+**/obj/
+**/out/
+**/*.user
+
+# IDE
+.vs/
+.vscode/
+.idea/
+*.suo
+
+# Generated
+*.dll
+*.exe
+*.pdb
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Sonar
+.sonarqube/
+.scannerwork/
+
+# Kustomize render output
+**/rendered-*.yaml
+
+# Pipeline temp
+**/generated-files/
+
+# Secrets (never commit real secrets)
+*.secret
+.env
+.env.local

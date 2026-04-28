@@ -1,0 +1,237 @@
+# =====================================================================
+# Azure DevOps Pipeline - SUCCESS scenario
+# Project: Prueba-Dummy DevOps Senior - FLBetances
+# Author: Robert Perez
+#
+# Stages:
+#   1. SonarQube Analysis (Quality Gate must PASS)
+#   2. Build & Push Docker image to Docker Hub
+#   3. Parallel jobs (Hello World + File generation)
+#   4. Deploy to Kubernetes (Minikube) using Kustomize
+# =====================================================================
+
+trigger:
+  branches:
+    include:
+      - main
+  paths:
+    include:
+      - FLBetances/**
+
+pr:
+  branches:
+    include:
+      - main
+
+pool:
+  name: SelfHostedPool
+
+variables:
+  # --- Image / Registry ---
+  dockerRegistryServiceConnection: 'DockerHub-Connection'
+  imageRepository: 'robertnperez/aspnetapp-flbetances'
+  # SemVer-style tag: vMAJOR.MINOR.<BuildId> — bump MAJOR/MINOR on releases
+  majorVersion: '1'
+  minorVersion: '0'
+  imageTag: 'v$(majorVersion).$(minorVersion).$(Build.BuildId)'
+  dockerfilePath: 'FLBetances/src/app/aspnetapp/Dockerfile'
+  dockerBuildContext: 'FLBetances/src/app/aspnetapp'
+
+  # --- SonarQube ---
+  sonarServiceConnection: 'SonarQube-Local'
+  sonarProjectKey: 'prueba-dummy-flbetances'
+  sonarProjectName: 'Prueba-Dummy-FLBetances'
+
+  # --- .NET ---
+  buildConfiguration: 'Release'
+  solutionPath: 'FLBetances/src/app/aspnetapp.sln'
+  projectPath: 'FLBetances/src/app/aspnetapp/aspnetapp.csproj'
+
+  # --- Kubernetes ---
+  kustomizeOverlay: 'FLBetances/environment/overlays/dev'
+
+stages:
+# =====================================================================
+# STAGE 1: SonarQube Analysis + Build
+# =====================================================================
+- stage: SonarQubeAnalysis
+  displayName: 'SonarQube Analysis & Build'
+  jobs:
+    - job: AnalyzeAndBuild
+      displayName: 'Analyze with SonarQube and build .NET app'
+      steps:
+        - task: UseDotNet@2
+          displayName: 'Install .NET 8 SDK'
+          inputs:
+            packageType: 'sdk'
+            version: '8.0.x'
+
+        - task: SonarQubePrepare@7
+          displayName: 'Prepare SonarQube analysis'
+          inputs:
+            SonarQube: '$(sonarServiceConnection)'
+            scannerMode: 'dotnet'
+            projectKey: '$(sonarProjectKey)'
+            projectName: '$(sonarProjectName)'
+            extraProperties: |
+              sonar.exclusions=**/wwwroot/lib/**,**/bin/**,**/obj/**,**/*.min.js,**/*.min.css
+              sonar.qualitygate.wait=true
+
+        - task: DotNetCoreCLI@2
+          displayName: 'Restore NuGet packages'
+          inputs:
+            command: 'restore'
+            projects: '$(projectPath)'
+
+        - task: DotNetCoreCLI@2
+          displayName: 'Build solution'
+          inputs:
+            command: 'build'
+            projects: '$(projectPath)'
+            arguments: '--configuration $(buildConfiguration) --no-restore'
+
+        - task: SonarQubeAnalyze@7
+          displayName: 'Run SonarQube analysis'
+
+        - task: SonarQubePublish@7
+          displayName: 'Publish Quality Gate result'
+          inputs:
+            pollingTimeoutSec: '300'
+
+# =====================================================================
+# STAGE 2: Docker Build & Push
+# =====================================================================
+- stage: DockerBuildPush
+  displayName: 'Build & Push Docker image'
+  dependsOn: SonarQubeAnalysis
+  condition: succeeded()
+  jobs:
+    - job: BuildAndPush
+      displayName: 'Build and push image to Docker Hub'
+      steps:
+        - bash: |
+            echo "==> Image to be built:"
+            echo "    $(imageRepository):$(imageTag)"
+            echo "    $(imageRepository):latest"
+          displayName: 'Show image tags'
+
+        - task: Docker@2
+          displayName: 'Build Docker image'
+          inputs:
+            command: 'build'
+            repository: '$(imageRepository)'
+            dockerfile: '$(dockerfilePath)'
+            buildContext: '$(dockerBuildContext)'
+            tags: |
+              $(imageTag)
+              latest
+
+        - task: Docker@2
+          displayName: 'Push Docker image to Docker Hub'
+          inputs:
+            command: 'push'
+            containerRegistry: '$(dockerRegistryServiceConnection)'
+            repository: '$(imageRepository)'
+            tags: |
+              $(imageTag)
+              latest
+
+# =====================================================================
+# STAGE 3: Parallel utility jobs (requirement 6.a and 6.b)
+# =====================================================================
+- stage: ParallelJobs
+  displayName: 'Parallel utility jobs (Hello World + File generation)'
+  dependsOn: DockerBuildPush
+  condition: succeeded()
+  jobs:
+    # --- Job A: Hello World x10 in parallel ---
+    - job: HelloWorldParallel
+      displayName: 'Hello World x10 (parallel matrix)'
+      strategy:
+        parallel: 10
+      steps:
+        - bash: |
+            chmod +x FLBetances/scripts/hello-world.sh
+            FLBetances/scripts/hello-world.sh "$SYSTEM_JOBPOSITIONINPHASE"
+          displayName: 'Print Hola Mundo'
+
+    # --- Job B: Create 10 files with date and print them ---
+    - job: GenerateFiles
+      displayName: 'Create 10 files with date and print contents'
+      steps:
+        - bash: |
+            chmod +x FLBetances/scripts/create-files.sh
+            FLBetances/scripts/create-files.sh "$(Agent.TempDirectory)/generated-files"
+          displayName: 'Generate and display files'
+
+# =====================================================================
+# STAGE 4: Deploy to Kubernetes (Minikube)
+# =====================================================================
+- stage: DeployK8s
+  displayName: 'Deploy to Kubernetes (Minikube)'
+  dependsOn:
+    - DockerBuildPush
+    - ParallelJobs
+  condition: succeeded()
+  jobs:
+    - deployment: DeployToMinikube
+      displayName: 'Deploy via Kustomize'
+      environment: 'minikube-dev'
+      strategy:
+        runOnce:
+          deploy:
+            steps:
+              - checkout: self
+
+              - task: PowerShell@2
+                displayName: 'Update image tag in Kustomize overlay'
+                inputs:
+                  targetType: 'inline'
+                  script: |
+                    cd FLBetances/environment/overlays/dev
+                    kubectl kustomize . > rendered-before.yaml
+                    Write-Host "==> Rendered manifest preview:"
+                    Get-Content rendered-before.yaml | Select-Object -First 30
+
+                    # Update image tag dynamically
+                    (Get-Content kustomization.yaml) `
+                      -replace 'newTag: .*', 'newTag: $(imageTag)' `
+                      | Set-Content kustomization.yaml
+
+                    Write-Host "==> Updated kustomization.yaml:"
+                    Get-Content kustomization.yaml
+
+              - task: PowerShell@2
+                displayName: 'Apply manifests to Minikube'
+                inputs:
+                  targetType: 'inline'
+                  script: |
+                    Write-Host "==> Current kubectl context:"
+                    kubectl config current-context
+
+                    Write-Host "==> Applying Kustomize overlay..."
+                    kubectl apply -k FLBetances/environment/overlays/dev
+
+                    Write-Host "==> Waiting for rollout..."
+                    kubectl rollout status deployment/dev-aspnetapp-web -n aspnetapp-dev --timeout=300s
+
+                    Write-Host "==> Resources deployed:"
+                    kubectl get all -n aspnetapp-dev
+                    kubectl get ingress -n aspnetapp-dev
+
+              - task: PowerShell@2
+                displayName: 'Smoke test'
+                inputs:
+                  targetType: 'inline'
+                  script: |
+                    Write-Host "==> Pod status:"
+                    kubectl get pods -n aspnetapp-dev -o wide
+
+                    Write-Host "==> Service endpoints:"
+                    kubectl get endpoints -n aspnetapp-dev
+
+                    Write-Host ""
+                    Write-Host "==> To access the app, run on host machine:"
+                    Write-Host "    minikube tunnel"
+                    Write-Host "    Add to hosts file: 127.0.0.1 aspnetapp.local"
+                    Write-Host "    Open: http://aspnetapp.local"
