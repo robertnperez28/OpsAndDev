@@ -38,8 +38,11 @@ variables:
   dockerBuildContext: 'FLBetances/src/app/aspnetapp'
 
   # --- SonarQube ---
-  sonarServiceConnection: 'SonarQube-Local'
-  sonarProjectKey: 'prueba-dummy-flbetances'
+  # NOTE: We bypass the SonarQube extension tasks (which auto-inject branch
+  # info incompatible with Community Edition) and call the scanner CLI directly.
+  # SONAR_HOST_URL and SONAR_TOKEN must be defined as pipeline variables
+  # (mark SONAR_TOKEN as secret).
+  sonarProjectKey: 'Prueba-Dummy-FLBetances'
   sonarProjectName: 'Prueba-Dummy-FLBetances'
 
   # --- .NET ---
@@ -60,28 +63,66 @@ stages:
     - job: AnalyzeAndBuild
       displayName: 'Analyze with SonarQube and build .NET app'
       steps:
-        - task: UseDotNet@2
-          displayName: 'Install .NET 8 SDK'
-          inputs:
-            packageType: 'sdk'
-            version: '8.0.x'
+        # Full clone (depth 0) so SonarQube can compute git blame info
+        # and attribute issues to the correct authors/commits.
+        - checkout: self
+          fetchDepth: 0
 
-        - task: SonarQubePrepare@7
-          displayName: 'Prepare SonarQube analysis'
+        # Self-hosted agent already has .NET 8 SDK installed.
+        # We just verify it as a precondition (fail fast if missing).
+        - powershell: |
+            dotnet --version
+            if ($LASTEXITCODE -ne 0) {
+              Write-Error ".NET SDK not found on agent. Install .NET 8 SDK and restart the agent."
+              exit 1
+            }
+          displayName: 'Verify .NET SDK is installed'
+
+        # NOTE: We use the SonarScanner CLI directly instead of the SonarQube
+        # tasks (v5/v7) because:
+        #   - v7 auto-injects sonar.branch.name (unsupported by Community Ed.)
+        #   - v5 is no longer published in the SonarSource extension
+        # This approach is fully transparent and works on any edition.
+        - task: DotNetCoreCLI@2
+          displayName: 'Install dotnet-sonarscanner global tool'
           inputs:
-            SonarQube: '$(sonarServiceConnection)'
-            scannerMode: 'dotnet'
-            projectKey: '$(sonarProjectKey)'
-            projectName: '$(sonarProjectName)'
-            extraProperties: |
-              sonar.exclusions=**/wwwroot/lib/**,**/bin/**,**/obj/**,**/*.min.js,**/*.min.css
-              sonar.qualitygate.wait=true
+            command: 'custom'
+            custom: 'tool'
+            arguments: 'install --global dotnet-sonarscanner'
 
         - task: DotNetCoreCLI@2
           displayName: 'Restore NuGet packages'
           inputs:
             command: 'restore'
             projects: '$(projectPath)'
+
+        - task: PowerShell@2
+          displayName: 'SonarScanner: Begin'
+          env:
+            SONAR_HOST_URL: $(SONAR_HOST_URL)
+            SONAR_TOKEN: $(SONAR_TOKEN)
+          inputs:
+            targetType: 'inline'
+            script: |
+              if ([string]::IsNullOrWhiteSpace($env:SONAR_HOST_URL)) {
+                Write-Error "Pipeline variable SONAR_HOST_URL is not defined."
+                exit 1
+              }
+              if ([string]::IsNullOrWhiteSpace($env:SONAR_TOKEN)) {
+                Write-Error "Pipeline variable SONAR_TOKEN is not defined or not marked as secret."
+                exit 1
+              }
+              $env:PATH = "$env:USERPROFILE\.dotnet\tools;$env:PATH"
+              Write-Host "Using SonarQube at: $env:SONAR_HOST_URL"
+              dotnet sonarscanner begin `
+                /k:"$(sonarProjectKey)" `
+                /n:"$(sonarProjectName)" `
+                /d:sonar.host.url="$env:SONAR_HOST_URL" `
+                /d:sonar.token="$env:SONAR_TOKEN" `
+                /d:sonar.exclusions="**/wwwroot/lib/**,**/bin/**,**/obj/**,**/*.min.js,**/*.min.css" `
+                /d:sonar.qualitygate.wait=true `
+                /d:sonar.scanner.scanAll=false
+              if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
         - task: DotNetCoreCLI@2
           displayName: 'Build solution'
@@ -90,13 +131,16 @@ stages:
             projects: '$(projectPath)'
             arguments: '--configuration $(buildConfiguration) --no-restore'
 
-        - task: SonarQubeAnalyze@7
-          displayName: 'Run SonarQube analysis'
-
-        - task: SonarQubePublish@7
-          displayName: 'Publish Quality Gate result'
+        - task: PowerShell@2
+          displayName: 'SonarScanner: End (waits for Quality Gate)'
+          env:
+            SONAR_TOKEN: $(SONAR_TOKEN)
           inputs:
-            pollingTimeoutSec: '300'
+            targetType: 'inline'
+            script: |
+              $env:PATH = "$env:USERPROFILE\.dotnet\tools;$env:PATH"
+              dotnet sonarscanner end /d:sonar.token="$env:SONAR_TOKEN"
+              if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 # =====================================================================
 # STAGE 2: Docker Build & Push
@@ -109,10 +153,10 @@ stages:
     - job: BuildAndPush
       displayName: 'Build and push image to Docker Hub'
       steps:
-        - bash: |
-            echo "==> Image to be built:"
-            echo "    $(imageRepository):$(imageTag)"
-            echo "    $(imageRepository):latest"
+        - powershell: |
+            Write-Host "==> Image to be built:"
+            Write-Host "    $(imageRepository):$(imageTag)"
+            Write-Host "    $(imageRepository):latest"
           displayName: 'Show image tags'
 
         - task: Docker@2
@@ -150,18 +194,16 @@ stages:
       strategy:
         parallel: 10
       steps:
-        - bash: |
-            chmod +x FLBetances/scripts/hello-world.sh
-            FLBetances/scripts/hello-world.sh "$SYSTEM_JOBPOSITIONINPHASE"
+        - powershell: |
+            FLBetances/scripts/hello-world.ps1 -Iteration "$env:SYSTEM_JOBPOSITIONINPHASE"
           displayName: 'Print Hola Mundo'
 
     # --- Job B: Create 10 files with date and print them ---
     - job: GenerateFiles
       displayName: 'Create 10 files with date and print contents'
       steps:
-        - bash: |
-            chmod +x FLBetances/scripts/create-files.sh
-            FLBetances/scripts/create-files.sh "$(Agent.TempDirectory)/generated-files"
+        - powershell: |
+            FLBetances/scripts/create-files.ps1 -OutputDir "$(Agent.TempDirectory)/generated-files"
           displayName: 'Generate and display files'
 
 # =====================================================================
@@ -185,6 +227,8 @@ stages:
 
               - task: PowerShell@2
                 displayName: 'Update image tag in Kustomize overlay'
+                env:
+                  KUBECONFIG: 'C:\agent\.kube\config'
                 inputs:
                   targetType: 'inline'
                   script: |
@@ -203,9 +247,15 @@ stages:
 
               - task: PowerShell@2
                 displayName: 'Apply manifests to Minikube'
+                env:
+                  # Self-hosted agent runs as NETWORK SERVICE, which has no
+                  # user profile. Point kubectl to a kubeconfig copy that the
+                  # service account can read (placed under the agent dir).
+                  KUBECONFIG: 'C:\agent\.kube\config'
                 inputs:
                   targetType: 'inline'
                   script: |
+                    Write-Host "==> KUBECONFIG: $env:KUBECONFIG"
                     Write-Host "==> Current kubectl context:"
                     kubectl config current-context
 
@@ -221,6 +271,8 @@ stages:
 
               - task: PowerShell@2
                 displayName: 'Smoke test'
+                env:
+                  KUBECONFIG: 'C:\agent\.kube\config'
                 inputs:
                   targetType: 'inline'
                   script: |

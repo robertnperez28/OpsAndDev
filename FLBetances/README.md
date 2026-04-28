@@ -154,7 +154,7 @@ start http://aspnetapp.local
 ## SonarQube
 
 - URL: `http://localhost:9000`
-- Project key: `prueba-dummy-flbetances` (success), `prueba-dummy-flbetances-failed` (fail)
+- Project key: `Prueba-Dummy-FLBetances` (success), `Prueba-Dummy-FLBetances-FAILED` (fail)
 - Quality Gate: default Sonar way (waits via `sonar.qualitygate.wait=true`)
 
 ## Cleanup

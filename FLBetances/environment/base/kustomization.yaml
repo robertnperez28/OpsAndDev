@@ -15,5 +15,5 @@ resources:
 labels:
   - includeSelectors: true
     pairs:
-      project: prueba-dummy-flbetances
+      project: Prueba-Dummy-FLBetances
       managed-by: kustomize

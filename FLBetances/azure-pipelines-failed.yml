@@ -17,8 +17,8 @@ pool:
   name: SelfHostedPool
 
 variables:
-  sonarServiceConnection: 'SonarQube-Local'
-  sonarProjectKey: 'prueba-dummy-flbetances-failed'
+  # SONAR_HOST_URL and SONAR_TOKEN come from pipeline variables.
+  sonarProjectKey: 'Prueba-Dummy-FLBetances-FAILED'
   sonarProjectName: 'Prueba-Dummy-FLBetances-FAILED'
   buildConfiguration: 'Release'
   badProjectPath: 'FLBetances/src-bad/aspnetapp/aspnetapp.csproj'
@@ -30,28 +30,54 @@ stages:
     - job: AnalyzeBadCode
       displayName: 'Analyze code with intentional issues'
       steps:
-        - task: UseDotNet@2
-          displayName: 'Install .NET 8 SDK'
-          inputs:
-            packageType: 'sdk'
-            version: '8.0.x'
+        # Self-hosted agent already has .NET 8 SDK installed (verified as precondition).
+        - powershell: |
+            dotnet --version
+            if ($LASTEXITCODE -ne 0) {
+              Write-Error ".NET SDK not found on agent. Install .NET 8 SDK and restart the agent."
+              exit 1
+            }
+          displayName: 'Verify .NET SDK is installed'
 
-        - task: SonarQubePrepare@7
-          displayName: 'Prepare SonarQube analysis (strict gate)'
+        - task: DotNetCoreCLI@2
+          displayName: 'Install dotnet-sonarscanner global tool'
           inputs:
-            SonarQube: '$(sonarServiceConnection)'
-            scannerMode: 'dotnet'
-            projectKey: '$(sonarProjectKey)'
-            projectName: '$(sonarProjectName)'
-            extraProperties: |
-              sonar.exclusions=**/wwwroot/lib/**,**/bin/**,**/obj/**
-              sonar.qualitygate.wait=true
+            command: 'custom'
+            custom: 'tool'
+            arguments: 'install --global dotnet-sonarscanner'
 
         - task: DotNetCoreCLI@2
           displayName: 'Restore'
           inputs:
             command: 'restore'
             projects: '$(badProjectPath)'
+
+        - task: PowerShell@2
+          displayName: 'SonarScanner: Begin (strict gate)'
+          env:
+            SONAR_HOST_URL: $(SONAR_HOST_URL)
+            SONAR_TOKEN: $(SONAR_TOKEN)
+          inputs:
+            targetType: 'inline'
+            script: |
+              if ([string]::IsNullOrWhiteSpace($env:SONAR_HOST_URL)) {
+                Write-Error "Pipeline variable SONAR_HOST_URL is not defined."
+                exit 1
+              }
+              if ([string]::IsNullOrWhiteSpace($env:SONAR_TOKEN)) {
+                Write-Error "Pipeline variable SONAR_TOKEN is not defined or not marked as secret."
+                exit 1
+              }
+              $env:PATH = "$env:USERPROFILE\.dotnet\tools;$env:PATH"
+              Write-Host "Using SonarQube at: $env:SONAR_HOST_URL"
+              dotnet sonarscanner begin `
+                /k:"$(sonarProjectKey)" `
+                /n:"$(sonarProjectName)" `
+                /d:sonar.host.url="$env:SONAR_HOST_URL" `
+                /d:sonar.token="$env:SONAR_TOKEN" `
+                /d:sonar.exclusions="**/wwwroot/lib/**,**/bin/**,**/obj/**" `
+                /d:sonar.qualitygate.wait=true
+              if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
         - task: DotNetCoreCLI@2
           displayName: 'Build (with bad code)'
@@ -60,13 +86,16 @@ stages:
             projects: '$(badProjectPath)'
             arguments: '--configuration $(buildConfiguration) --no-restore'
 
-        - task: SonarQubeAnalyze@7
-          displayName: 'Run SonarQube analysis'
-
-        - task: SonarQubePublish@7
-          displayName: 'Wait for Quality Gate (expected to FAIL)'
+        - task: PowerShell@2
+          displayName: 'SonarScanner: End (waits for Quality Gate, expected FAIL)'
+          env:
+            SONAR_TOKEN: $(SONAR_TOKEN)
           inputs:
-            pollingTimeoutSec: '300'
+            targetType: 'inline'
+            script: |
+              $env:PATH = "$env:USERPROFILE\.dotnet\tools;$env:PATH"
+              dotnet sonarscanner end /d:sonar.token="$env:SONAR_TOKEN"
+              if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 # These stages will NEVER run because the Quality Gate above fails.
 # This proves the gate effectively blocks the pipeline.
@@ -77,4 +106,4 @@ stages:
   jobs:
     - job: NeverExecutes
       steps:
-        - bash: echo "If you see this, the gate did not block correctly."
+        - powershell: Write-Host "If you see this, the gate did not block correctly."
